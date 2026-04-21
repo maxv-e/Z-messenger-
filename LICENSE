@@ -1,0 +1,255 @@
+```markdown
+# 🔒 Z Messenger Protocol
+
+**Production‑ready secure messenger** with end‑to‑end encryption (E2EE), perfect forward secrecy (PFS), groups, channels, offline messages, and rate limiting.
+
+Built with Python `asyncio`, `cryptography`, and `aiosqlite`.
+
+---
+
+## ✨ Features
+
+- 🔐 **End‑to‑end encryption** – X25519 + ChaCha20‑Poly1305, each private message is encrypted for the recipient only.
+- 🔄 **Perfect forward secrecy** – ephemeral X25519 handshake per connection, separate from long‑term identity keys.
+- 💬 **Private messages, groups, channels** – support for one‑to‑one, group (private/public), and channel (private/public) messaging.
+- 📦 **Offline messages** – pending messages stored in SQLite, delivered when recipient comes online.
+- ✅ **Delivery receipts & read status** – ACK mechanism with retries for pending messages.
+- 🔑 **Session restoration** – stateless authentication tokens (HMAC‑signed) with optional device‑binding.
+- 🛡️ **Security hardening**:
+  - Brute‑force protection (failed login tracking, IP blocking).
+  - Rate limiting (per IP and per user, configurable).
+  - Sequence number anti‑replay protection.
+  - Connection throttling per IP.
+- 💾 **Persistent storage** – SQLite with WAL mode, automatic cleanup of old messages/pending data.
+- 🖥️ **Console client** – built‑in interactive CLI with `/commands` and E2EE key management.
+- 📄 **Profile & avatar** – optional base64‑encoded avatars (compressed with zlib).
+
+---
+
+## 🧱 Tech Stack
+
+| Component          | Technology                                             |
+| ------------------ | ------------------------------------------------------ |
+| Language           | Python 3.8+                                            |
+| Async runtime      | `asyncio`                                              |
+| Database           | `aiosqlite` (SQLite with WAL)                          |
+| Cryptography       | `cryptography` (X25519, HKDF, ChaCha20‑Poly1305)       |
+| Key derivation     | HKDF (SHA‑256)                                         |
+| Password hashing   | PBKDF2‑HMAC‑SHA256 with 600,000 iterations             |
+| Logging            | RotatingFileHandler + console                          |
+
+---
+
+## 📦 Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/z-messenger.git
+cd z-messenger
+
+# Create virtual environment (optional)
+python3 -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install cryptography aiosqlite
+```
+
+⚠️ No additional packages required – only cryptography and aiosqlite.
+
+---
+
+⚙️ Configuration
+
+Edit z_config.json (created automatically on first run) or modify the CONFIG dictionary inside the script.
+
+Key settings:
+
+```json
+{
+  "db_path": "z_messenger.db",
+  "tcp_port": 9999,
+  "token_expire_seconds": 86400,
+  "max_login_attempts": 5,
+  "block_time_seconds": 600,
+  "max_msg_per_second": 10,
+  "offline_message_ttl_days": 30,
+  "history_retention_days": 90
+}
+```
+
+---
+
+🚀 Running
+
+Start the server
+
+```bash
+python z.py server
+```
+
+The server will:
+
+· Generate or load server long‑term X25519 key pair (stored as server_private.key / server_public.key).
+· Initialize SQLite database with all tables and indexes.
+· Start listening on 0.0.0.0:9999.
+
+Logs are written to z_messenger.log.
+
+Run the client
+
+```bash
+python z.py client z://localhost:9999
+```
+
+The client uses TOFU (Trust On First Use) for the server’s public key.
+After the first connection, the server key is cached in server_key_<host>_<port>.bin.
+
+On first run you will be asked to register or login:
+
+```
+Login or Register? (l/r): r
+Login: alice
+Password: ********
+Display name: Alice
+```
+
+Your E2EE identity key is saved as e2ee_key_<user_id>.bin.
+The session token is stored in .z_session for auto‑restore.
+
+---
+
+💬 Client Commands
+
+All commands start with /.
+
+Command Description
+/msg <user_id> <text> Send E2EE‑encrypted private message
+/groupmsg <group_id> <text> Send message to a group
+/channelmsg <channel_id> <text> Send message to a channel
+/profile Show your profile
+/editprofile Change username, nickname, bio
+/creategroup Create a new group (private / public)
+/createchannel Create a new channel (private / public)
+/join <group_id> Join a public group
+/subscribe <channel_id> Subscribe to a public channel
+/history personal/group/channel <id> Show last messages (default 200)
+/sync [minutes] Fetch unread messages from last N minutes
+/quit Exit and revoke session token
+
+E2EE private messages: The client automatically fetches the recipient’s public key and encrypts the message.
+Decryption happens transparently on arrival.
+
+---
+
+🔐 Security Design
+
+Handshake (PFS)
+
+1. Client generates ephemeral X25519 keypair, sends public part.
+2. Server generates ephemeral X25519 keypair, sends public part.
+3. Both compute shared secret → HKDF → ChaCha20‑Poly1305 session key.
+4. All further traffic is encrypted with that session key (unique per connection).
+
+End‑to‑end encryption for personal messages
+
+· Each user has a long‑term X25519 identity key stored only on the client.
+· To send a private message:
+  1. Client fetches recipient’s public key from the server (the server never sees the private key).
+  2. Client generates ephemeral X25519 keypair, derives a one‑time key via HKDF.
+  3. Message is encrypted with ChaCha20‑Poly1305.
+  4. Ephemeral public key + nonce + ciphertext are base64‑encoded and sent.
+· The server only stores the encrypted blob.
+· Only the recipient can decrypt using their long‑term private key.
+
+Authentication & sessions
+
+· Password hashed with PBKDF2‑HMAC‑SHA256 (600k iterations) + salt.
+· On successful login, server issues a signed token: user_id:device_id:ip:expires + HMAC‑SHA256.
+· Token is bound to IP and device ID to prevent theft.
+· Sessions are stored in the sessions table and can be revoked remotely.
+
+Anti‑abuse
+
+· Brute‑force: Failed attempts per IP tracked in failed_logins table; after 5 failures within 5 minutes, IP is blocked for 10 minutes.
+· Rate limiting: Max 10 messages per second per IP / per user (configurable).
+· Connection limit: Max 10 concurrent connections per IP.
+· Replay protection: Each encrypted packet includes a sequence number; server rejects old or out‑of‑window sequences.
+
+---
+
+🗄️ Database Schema (simplified)
+
+```sql
+users                -- id, login, password_hash, username, nickname, bio, avatar_blob
+user_keys            -- user_id, public_key_b64 (E2EE)
+groups / channels    -- id, name, type, owner_id
+group_members / channel_subscribers
+messages             -- sender, recipient_type, recipient_id, content (encrypted), timestamp, status
+pending_messages     -- offline queue with retry_count, nonce
+sessions             -- token, user_id, device_id, ip, expires_at
+failed_logins        -- ip, attempt_time
+```
+
+Automatic cleanup tasks run daily:
+
+· Delete old pending messages (TTL 30 days) and failed deliveries after max retries.
+· Delete message history older than 90 days.
+· Remove expired sessions and stale failed login entries.
+
+---
+
+🧪 Example session
+
+```bash
+$ python z.py client z://localhost:9999
+Connected to z://localhost:9999
+Using cached server public key: ...
+Login or Register? (l/r): r
+Login: bob
+Password: ********
+Display name: Bob
+Authenticated as user 2
+
+> /msg 1 Hello Alice, this is E2EE!
+[You -> 1]: (encrypted)
+[PM from 1]: Hi Bob! Message received.
+> /creategroup
+Group name: Crypto Lovers
+Type (public/private): private
+{'status': 'ok', 'group_id': 1}
+> /groupmsg 1 Did you see the new protocol spec?
+[You -> group 1]: Did you see the new protocol spec?
+> /quit
+```
+
+---
+
+📁 File structure
+
+```
+.
+├── z.py                    # Main script (server + client)
+├── z_config.json           # User configuration (auto‑generated)
+├── z_messenger.db          # SQLite database
+├── z_messenger.log         # Rotating log file
+├── server_private.key      # Server long‑term X25519 private key
+├── server_public.key       # Server long‑term X25519 public key
+├── server_key_*.bin        # Cached server public keys (client side)
+├── e2ee_key_<uid>.bin      # User’s E2EE identity private key
+├── .z_session              # Session token for auto‑restore
+```
+
+---
+
+🤝 Contributing
+
+Pull requests and issues are welcome. Please follow PEP 8 and include type hints where possible.
+
+---
+
+⚠️ Disclaimer
+
+This software is provided for educational and research purposes. While it implements strong cryptography, no system is 100% secure. Use at your own risk.
+
+```
